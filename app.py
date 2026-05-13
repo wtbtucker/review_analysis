@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from ReviewLoader import ReviewLoader
 from openai import OpenAI
 import json
@@ -117,21 +118,56 @@ no_comment_reviews["topics"] = [[] for _ in range(len(no_comment_reviews))]
 
 all_reviews = pd.concat([no_comment_reviews, reviews_with_sentiment])
 all_reviews["create_time"] = pd.to_datetime(all_reviews["create_time"], format="%Y-%m-%dT%H:%M:%S.%fZ")
+
+def variable_window_by_volume(df, target_count=15, date_col='create_time', topic_col="overall_sentiment"):
+    df = df.sort_values(date_col).copy()
+    df["sma"] = np.nan
+    df["window_size"] = np.nan
+
+    for i in range(len(df)):
+        reviews_collected = 0
+        window_size = 0
+
+        for j in range(i, -1, -1):
+            if df[topic_col].iloc[j] is not None and not np.isnan(df[topic_col].iloc[j]):
+                reviews_collected += 1
+                window_size += 1
+                if reviews_collected >= target_count:
+                    break
+
+        window_data = df[topic_col].iloc[i-window_size+1:i+1]
+        df.loc[df.index[i], "sma"] = window_data.mean()
+        df.loc[df.index[i], "window_size"] = window_size
+    
+    return df
+
+
+
+def plot_store_sentiment(store_name: str, store_df: pd.DataFrame) -> None:
+    sma_df = variable_window_by_volume(store_df)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=sma_df["create_time"], y=sma_df['overall_sentiment'],
+                            mode='markers', name='Raw', marker=dict(size=3, opacity=0.5)))
+    fig.add_trace(go.Scatter(x=sma_df["create_time"], y=sma_df['sma'],
+                            mode='lines', name='7-day SMA', line=dict(width=3, color='red')))
+    fig.update_layout(title=f'{store_name} Sentiment 7-day Rolling Average')
+    fig.show()
+    # fig = px.scatter(
+    #     x=monthly_store.index, y=monthly_store["mean_sentiment"],
+    #     title=f"{store_name} Sentiment Over Time",
+    #     trendline="ols",
+    #     labels={"x": "Date", "y": "Mean Sentiment by Month"}
+    # )
+
+    # fig.show()
+
+
 all_reviews["period"] = all_reviews["create_time"].dt.to_period("M").dt.start_time
+all_reviews = all_reviews[all_reviews["period"]>pd.to_datetime("2016-01-01")]
+store_names = list(all_reviews["store"].unique())
+for store in store_names:
+    store_df = all_reviews[all_reviews["store"] == store]
+    plot_store_sentiment(store, store_df)
 
-monthly_all = (
-    all_reviews
-    .groupby("period")
-    .agg(
-        review_count=("rating", "count"),
-        mean_sentiment=("overall_sentiment", "mean"),
-        mean_rating=("rating", "mean")
-    )
-)
-fig = px.line(
-    x=monthly_all.index, y=monthly_all["mean_sentiment"],
-    title="Sentiment Over Time",
-    labels={"x": "Date", "y": "Average Sentiment by Month"}
-)
 
-fig.show()
